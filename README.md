@@ -1,4 +1,12 @@
-# 🍅 Toma Timer
+# Toma Timer
+
+---
+---
+
+Not production ready, this is for my personal use only
+
+---
+---
 
 A lightweight, fast Pomodoro timer with a clean interface, session logging,
 data export, and productivity statistics — built with Python + CustomTkinter.
@@ -91,7 +99,3 @@ src/
 ├── tray.py          # System tray (pystray)
 └── config.py        # Settings persistence
 ```
-
-## License
-
-MIT
