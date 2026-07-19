@@ -16,8 +16,8 @@ dist/
 *.egg
 
 # Project data (user-generated, not committed)
-data/*.db
-data/*.sqlite
+#data/*.db
+#data/*.sqlite
 
 # Exports
 exports/
@@ -34,3 +34,7 @@ Thumbs.db
 
 # Logs
 *.log
+AGENTS.md
+CONVERSATION_LOG.md
+WORK_LOG.md
+
