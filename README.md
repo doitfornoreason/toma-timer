@@ -1,8 +1,7 @@
 # Toma Timer
 
----
-Not production ready, this is for my personal use only
----
+`Not production ready, this is for my personal use only`
+
 
 A lightweight, fast Pomodoro timer with a clean interface, session logging,
 data export, and productivity statistics — built with Python + CustomTkinter.
