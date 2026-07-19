@@ -98,8 +98,6 @@ class TomaTimerApp(ctk.CTk):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(12, 4))
 
-        ctk.CTkLabel(self, text="Toma Timer", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
-
         self.theme_switch = ctk.CTkSwitch(
             header, text=self._theme_label(self.config["theme"]), command=self._toggle_theme,
             onvalue="dark", offvalue="light",
@@ -186,12 +184,19 @@ class TomaTimerApp(ctk.CTk):
         for w in self._dot_widgets:
             w.destroy()
         self._dot_widgets.clear()
+        states = self.engine.cycle_states
         n = self.engine.sessions_before_long_break
-        done = self.engine._cycle_position
         for i in range(n):
-            char = "*" if i < done else "o"
-            color = "#3b82f6" if i < done else "gray50"
-            lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=24), text_color=color)
+            if i < len(states):
+                if states[i] is True:
+                    char, color = "*", "#3b82f6"    # completed = blue
+                elif states[i] is False:
+                    char, color = "*", "#ef4444"    # skipped early = red
+                else:
+                    char, color = "o", "gray50"     # in progress = pending
+            else:
+                char, color = "o", "gray50"         # not yet started = pending
+            lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=30), text_color=color)
             lbl.pack(side="left", padx=6)
             self._dot_widgets.append(lbl)
 
@@ -236,7 +241,7 @@ class TomaTimerApp(ctk.CTk):
             else:
                 self.hint_label.configure(text="Press Start to begin a focus session")
         elif state == State.PAUSED:
-            self.pause_btn.configure(text="Resume")
+            self.pause_btn.configure(text="Resume", state="normal")
 
     def _ui_session_end(self, session_type: str, completed: bool) -> None:
         if completed and self.config.get("sound_enabled", True):
@@ -461,15 +466,35 @@ class SettingsDialog(ctk.CTkToplevel):
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=4)
         ctk.CTkLabel(row, text=label_text, width=140, anchor="w").pack(side="left")
-        val_lbl = ctk.CTkLabel(row, text=str(default), width=36)
-        val_lbl.pack(side="right")
 
-        def on_change(v):
+        entry = ctk.CTkEntry(row, width=60, justify="center")
+        entry.insert(0, str(default))
+        entry.pack(side="right", padx=(4, 0))
+
+        def sync_entry():
+            """Read entry text, validate, push to var + slider."""
+            try:
+                v = int(entry.get())
+                v = max(lo, min(hi, v))
+                var.set(v)
+                entry.delete(0, "end")
+                entry.insert(0, str(v))
+                slider.set(v)
+            except ValueError:
+                # Reset to current var value
+                entry.delete(0, "end")
+                entry.insert(0, str(var.get()))
+
+        entry.bind("<Return>", lambda e: sync_entry())
+        entry.bind("<FocusOut>", lambda e: sync_entry())
+
+        def on_slider(v):
             iv = int(float(v))
             var.set(iv)
-            val_lbl.configure(text=str(iv))
+            entry.delete(0, "end")
+            entry.insert(0, str(iv))
 
-        slider = ctk.CTkSlider(row, from_=lo, to=hi, command=on_change)
+        slider = ctk.CTkSlider(row, from_=lo, to=hi, command=on_slider)
         slider.set(default)
         slider.pack(side="left", fill="x", expand=True, padx=(8, 8))
 

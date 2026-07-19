@@ -68,6 +68,7 @@ class TimerEngine:
         self.total: int = 0  # total seconds in current phase
         self.completed_focus_count: int = 0  # since last long break
         self._cycle_position: int = 0  # focus sessions in current cycle (0..N-1)
+        self.cycle_states: list[bool | None] = []  # per-slot: True=completed, False=skipped-early, None=pending
         self._current_session_id: int | None = None
         self._current_session_type: str = ""
         self._elapsed_at_pause: int = 0
@@ -124,15 +125,20 @@ class TimerEngine:
                 end_session(self._current_session_id, completed=False, actual_seconds=elapsed)
                 self.on_session_end(self._current_session_type, completed=False)
             self._hard_stop()
+            self.cycle_states = []
             self.state = State.IDLE
             self.remaining = 0
             self.total = 0
             self.on_state_change(State.IDLE, "")
 
     def skip(self) -> None:
-        """End current phase immediately as completed and advance."""
+        """End current phase. If >5min left on a focus session, mark as
+        incomplete (early skip) - cycle position does not advance."""
         with self._lock:
-            self._complete_current(completed=True)
+            if self._current_session_type == "focus" and self.remaining > 300:
+                self._complete_current(completed=False)
+            else:
+                self._complete_current(completed=True)
 
     def stop_engine(self) -> None:
         """Fully tear down the background thread (app quit)."""
@@ -150,6 +156,9 @@ class TimerEngine:
         if state == State.FOCUS:
             minutes = self.focus_minutes
             session_type = "focus"
+            # Ensure cycle_states covers the current position
+            while len(self.cycle_states) <= self._cycle_position:
+                self.cycle_states.append(None)
         elif state == State.SHORT_BREAK:
             minutes = self.short_break_minutes
             session_type = "short_break"
@@ -182,16 +191,20 @@ class TimerEngine:
 
         # Decide next phase
         if finished_type == "focus" and completed:
+            if self._cycle_position < len(self.cycle_states):
+                self.cycle_states[self._cycle_position] = True
             self._cycle_position += 1
             self.completed_focus_count += 1
             if self._cycle_position >= self.sessions_before_long_break:
                 self._cycle_position = 0
+                self.cycle_states = []
                 next_state = State.LONG_BREAK
             else:
                 next_state = State.SHORT_BREAK
         elif finished_type == "focus" and not completed:
-            # Reset focus was handled by reset(); here only skip-incomplete path
-            self._cycle_position = 0
+            # Skip-early: don't advance cycle, mark as incomplete
+            if self._cycle_position < len(self.cycle_states):
+                self.cycle_states[self._cycle_position] = False
             next_state = State.IDLE
         else:
             # Just finished a break -> focus
