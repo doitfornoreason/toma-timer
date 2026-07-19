@@ -56,11 +56,9 @@ STATE_COLORS = {
 class TomaTimerApp(ctk.CTk):
     def __init__(self) -> None:
         # className sets a baseline X11 WM_CLASS (Tk mangles casing to
-        # "Tomatimer"); good enough for best-effort window focus.
+        # "Tomatimer"); we override it to "toma-timer" via xlib below.
         super().__init__(className="TomaTimer")
-        # Tell the WM this is a normal application window (not dialog/tooltip),
-        # so tiling WMs apply their standard tiling/maximize rules and waybar
-        # is not obscured on fullscreen.
+        # Tell the WM this is a normal application window (not dialog/tooltip)
         self.wm_attributes('-type', 'normal')
         self.config = load()
         init_db()
@@ -73,8 +71,8 @@ class TomaTimerApp(ctk.CTk):
 
         self.title("Toma Timer")
         # Don't set explicit geometry — let the tiling WM decide the initial
-        # size and position. We'll send a maximize request after the window
-        # is mapped via _fix_wm_properties.
+        # size and position. We withdraw + set properties + deiconify below
+        # so the WM sees the correct class on first map.
         self.minsize(800, 600)
         self._set_window_icon()
 
@@ -93,9 +91,13 @@ class TomaTimerApp(ctk.CTk):
 
         self._build_ui()
         self._refresh_session_dots()
-        # Fix WM_CLASS on both client + frame after the window is realized.
-        self.after(100, self._fix_wm_properties)
-        # (WM_CLASS is set pre-map above, no deferred call needed)
+        # Set WM_CLASS and other X11 properties before the window is mapped
+        # (Tk doesn't map until mainloop). This lets the WM see the correct
+        # class "toma-timer" on first map.
+        self._fix_wm_properties()
+        # Schedule a tiling request for Hyprland (needs to run after the
+        # window is mapped and the compositor has registered it).
+        self.after(500, self._request_tile_hyprland)
 
         # Clean shutdown
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -411,51 +413,73 @@ class TomaTimerApp(ctk.CTk):
     # WM properties
     # ------------------------------------------------------------------ #
     def _fix_wm_properties(self) -> None:
-        """Set clean WM_CLASS + _NET_WM_PID + request maximize via EWMH.
+        """Set clean WM_CLASS + _NET_WM_WINDOW_TYPE_NORMAL + _NET_WM_PID.
 
-        Tk's className param mangles WM_CLASS (e.g. "TomaTimer" becomes
-        "Tomatimer"). We override to "toma-timer" on both the client
-        window and its parent frame.
-
-        On tiling WMs the explicit geometry set by Tk can make the window
-        float; we send a _NET_WM_STATE client message requesting maximize
-        so the compositor tiles the window properly.
+        Runs before the window is mapped (called from __init__ before
+        mainloop). Overrides Tk's mangled WM_CLASS ("Tomatimer") with
+        "toma-timer" on both the client window and its parent frame.
         """
         try:
-            from Xlib import X, display
+            from Xlib import display
             from Xlib.xobject.drawable import Window
 
             d = display.Display()
             client = Window(d.display, self.winfo_id())
             parent = client.query_tree().parent
 
-            # Override WM_CLASS (client + frame)
             val = "toma-timer\0toma-timer\0".encode()
             atom = d.intern_atom("WM_CLASS")
             typ = d.intern_atom("STRING")
             for win in (client, parent):
                 win.change_property(atom, typ, 8, val)
 
-            # Set _NET_WM_PID
+            type_atom = d.intern_atom("_NET_WM_WINDOW_TYPE")
+            normal = d.intern_atom("_NET_WM_WINDOW_TYPE_NORMAL")
+            parent.change_property(type_atom, d.intern_atom("ATOM"), 32,
+                                    [normal])
+
             pid_atom = d.intern_atom("_NET_WM_PID")
             card = d.intern_atom("CARDINAL")
             import os
             client.change_property(pid_atom, card, 32, [os.getpid()])
-
-            # Request maximize via EWMH (_NET_WM_STATE_ADD)
-            net_wm_state = d.intern_atom("_NET_WM_STATE")
-            max_v = d.intern_atom("_NET_WM_STATE_MAXIMIZED_VERT")
-            max_h = d.intern_atom("_NET_WM_STATE_MAXIMIZED_HORZ")
-            root = d.screen().root
-            ev = X.ClientMessageEvent(
-                window=client,
-                client_type=net_wm_state,
-                data=(32, [1, max_v, max_h, 0, 0]),
-            )
-            root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
             d.flush()
         except Exception:
-            pass  # non-X11 or xlib missing
+            pass
+
+    def _request_tile_hyprland(self) -> None:
+        """If running under Hyprland, force this window to tile via IPC.
+
+        Hyprland's XWayland bridge doesn't process EWMH maximize requests
+        reliably. We use hyprctl IPC to find the window by PID. If the
+        window is floating, we toggle it to tiling. Non-fatal if hyprctl
+        isn't available or the window is already tiled.
+        """
+        import os
+        if "HYPRLAND_INSTANCE_SIGNATURE" not in os.environ:
+            return
+        try:
+            import json
+            import subprocess
+            result = subprocess.run(
+                ["hyprctl", "clients", "-j"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode != 0:
+                return
+            clients = json.loads(result.stdout)
+            my_pid = os.getpid()
+            for c in clients:
+                if c.get("pid") == my_pid:
+                    if c.get("floating", False):
+                        addr = c["address"]
+                        subprocess.run(
+                            ["hyprctl", "dispatch", "togglefloating",
+                             f"window:{addr}"],
+                            capture_output=True, timeout=2,
+                        )
+                    break
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Lifecycle
