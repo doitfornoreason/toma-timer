@@ -72,7 +72,9 @@ class TomaTimerApp(ctk.CTk):
         ctk.set_window_scaling(1.15)
 
         self.title("Toma Timer")
-        self.geometry("960x700")
+        # Don't set explicit geometry — let the tiling WM decide the initial
+        # size and position. We'll send a maximize request after the window
+        # is mapped via _fix_wm_properties.
         self.minsize(800, 600)
         self._set_window_icon()
 
@@ -409,31 +411,48 @@ class TomaTimerApp(ctk.CTk):
     # WM properties
     # ------------------------------------------------------------------ #
     def _fix_wm_properties(self) -> None:
-        """Set clean WM_CLASS on both client and frame windows.
+        """Set clean WM_CLASS + _NET_WM_PID + request maximize via EWMH.
 
-        Tk's className param mangles the WM_CLASS casing (e.g. "TomaTimer"
-        becomes "Tomatimer"). Tiling WMs rely on the class for rules; we
-        override it to "toma-timer" on both the client window and its
-        parent frame (WM reparents the client into a frame and reads the
-        frame's property). Also sets _NET_WM_PID so the WM can identify
-        the process.
+        Tk's className param mangles WM_CLASS (e.g. "TomaTimer" becomes
+        "Tomatimer"). We override to "toma-timer" on both the client
+        window and its parent frame.
+
+        On tiling WMs the explicit geometry set by Tk can make the window
+        float; we send a _NET_WM_STATE client message requesting maximize
+        so the compositor tiles the window properly.
         """
         try:
-            from Xlib import display
+            from Xlib import X, display
             from Xlib.xobject.drawable import Window
+
             d = display.Display()
             client = Window(d.display, self.winfo_id())
             parent = client.query_tree().parent
+
+            # Override WM_CLASS (client + frame)
             val = "toma-timer\0toma-timer\0".encode()
             atom = d.intern_atom("WM_CLASS")
             typ = d.intern_atom("STRING")
             for win in (client, parent):
                 win.change_property(atom, typ, 8, val)
-            # Also set _NET_WM_PID for process identification
+
+            # Set _NET_WM_PID
             pid_atom = d.intern_atom("_NET_WM_PID")
             card = d.intern_atom("CARDINAL")
             import os
             client.change_property(pid_atom, card, 32, [os.getpid()])
+
+            # Request maximize via EWMH (_NET_WM_STATE_ADD)
+            net_wm_state = d.intern_atom("_NET_WM_STATE")
+            max_v = d.intern_atom("_NET_WM_STATE_MAXIMIZED_VERT")
+            max_h = d.intern_atom("_NET_WM_STATE_MAXIMIZED_HORZ")
+            root = d.screen().root
+            ev = X.ClientMessageEvent(
+                window=client,
+                client_type=net_wm_state,
+                data=(32, [1, max_v, max_h, 0, 0]),
+            )
+            root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
             d.flush()
         except Exception:
             pass  # non-X11 or xlib missing
