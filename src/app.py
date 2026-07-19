@@ -4,8 +4,9 @@ Layout:
   - Header: title + theme toggle + settings button
   - Tabview:
       Timer tab -> state label, big countdown, progress bar, control buttons,
-                   session-cycle dots
+                   session-cycle dots, todo list
       Stats tab -> metrics panel + embedded matplotlib figure + refresh/export
+      Settings tab -> scrollable settings (durations, behaviour, sound, data)
 
 Timer engine callbacks arrive on a background thread and are marshalled to the
 Tk main loop via `after(0, ...)` because Tkinter is not thread-safe.
@@ -20,7 +21,7 @@ import customtkinter as ctk
 from customtkinter import filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from config import load, save
+from config import load, save, DEFAULTS
 from database import get_all_sessions, init_db
 from export import default_export_dir, export_csv, export_json
 from sound import play
@@ -55,28 +56,20 @@ STATE_COLORS = {
 
 class TomaTimerApp(ctk.CTk):
     def __init__(self) -> None:
-        # className sets a baseline X11 WM_CLASS (Tk mangles casing to
-        # "Tomatimer"); we override it to "toma-timer" via xlib below.
         super().__init__(className="TomaTimer")
-        # Tell the WM this is a normal application window (not dialog/tooltip)
         self.wm_attributes('-type', 'normal')
         self.config = load()
         init_db()
 
         ctk.set_appearance_mode(self.config["theme"])
         ctk.set_default_color_theme(self.config["color_theme"])
-        # Scale entire UI proportionally (fonts, widgets, spacing)
         ctk.set_widget_scaling(1.5)
         ctk.set_window_scaling(1.15)
 
         self.title("Toma Timer")
-        # Don't set explicit geometry — let the tiling WM decide the initial
-        # size and position. We withdraw + set properties + deiconify below
-        # so the WM sees the correct class on first map.
         self.minsize(800, 600)
         self._set_window_icon()
 
-        # Timer engine. Callbacks marshalled to main thread.
         self.engine = TimerEngine(
             focus_minutes=self.config["focus_minutes"],
             short_break_minutes=self.config["short_break_minutes"],
@@ -91,23 +84,16 @@ class TomaTimerApp(ctk.CTk):
 
         self._build_ui()
         self._refresh_session_dots()
-        # Set WM_CLASS and other X11 properties before the window is mapped
-        # (Tk doesn't map until mainloop). This lets the WM see the correct
-        # class "toma-timer" on first map.
         self._fix_wm_properties()
-        # Schedule a tiling request for Hyprland (needs to run after the
-        # window is mapped and the compositor has registered it).
         self.after(500, self._request_tile_hyprland)
 
-        # Clean shutdown
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.tray = None  # set by main.py if tray is enabled
+        self.tray = None
 
     # ------------------------------------------------------------------ #
     # UI construction
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
-        # Header
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(12, 4))
 
@@ -118,48 +104,42 @@ class TomaTimerApp(ctk.CTk):
         self.theme_switch.set(self.config["theme"])
         self.theme_switch.pack(side="right", padx=(8, 0))
 
-        ctk.CTkButton(header, text="Settings", width=100, command=self._open_settings).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(header, text="Settings", width=100, command=self._switch_to_settings).pack(side="right", padx=(0, 4))
 
-        # Tabs
         self.tabview = ctk.CTkTabview(self)
         self.tabview.add("Timer")
         self.tabview.add("Stats")
+        self.tabview.add("Settings")
         self.tabview.pack(fill="both", expand=True, padx=16, pady=(4, 12))
 
         self._build_timer_tab(self.tabview.tab("Timer"))
         self._build_stats_tab(self.tabview.tab("Stats"))
+        self._build_settings_tab(self.tabview.tab("Settings"))
 
     def _build_timer_tab(self, parent) -> None:
-        # Center frame that fills the tab (spacers push content to vertical center)
         center = ctk.CTkFrame(parent, fg_color="transparent")
         center.pack(expand=True, fill="both")
 
-        # Top spacer
         ctk.CTkFrame(center, fg_color="transparent", height=0).pack(expand=True, fill="y")
 
-        # State label
         self.state_label = ctk.CTkLabel(center, text="Ready",
                                         font=ctk.CTkFont(size=18, weight="bold"))
         self.state_label.pack(pady=(0, 8))
 
-        # Big countdown
         self.time_label = ctk.CTkLabel(
             center, text=fmt_time(self.config["focus_minutes"] * 60),
             font=ctk.CTkFont(size=90, weight="bold"),
         )
         self.time_label.pack(pady=(0, 12))
 
-        # Progress bar
         self.progress = ctk.CTkProgressBar(center, width=400, height=12)
         self.progress.set(0)
         self.progress.pack(pady=(0, 16))
 
-        # Session cycle dots
         self.dots_frame = ctk.CTkFrame(center, fg_color="transparent")
         self.dots_frame.pack(pady=(0, 16))
         self._dot_widgets: list[ctk.CTkLabel] = []
 
-        # Control buttons
         btn_frame = ctk.CTkFrame(center, fg_color="transparent")
         btn_frame.pack(pady=(0, 8))
 
@@ -180,10 +160,36 @@ class TomaTimerApp(ctk.CTk):
                                        text_color=("gray20", "gray90"))
         self.skip_btn.grid(row=0, column=3, padx=6)
 
-        # Bottom spacer
+        # Todo list
+        todo_container = ctk.CTkFrame(center, fg_color="transparent")
+        todo_container.pack(fill="x", padx=0, pady=(8, 0))
+
+        todo_header = ctk.CTkFrame(todo_container, fg_color="transparent")
+        todo_header.pack(fill="x", padx=40)
+        ctk.CTkLabel(todo_header, text="To-Do", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        self.todo_remove_btn = ctk.CTkButton(
+            todo_header, text="Remove done", width=100, height=22,
+            command=self._remove_completed_todos,
+            fg_color="transparent", border_width=1,
+            text_color=("gray20", "gray90"), font=ctk.CTkFont(size=11),
+        )
+        self.todo_remove_btn.pack(side="right")
+
+        self.todo_scroll = ctk.CTkScrollableFrame(todo_container, height=120)
+        self.todo_scroll.pack(fill="x", padx=40, pady=(4, 4))
+        self._todo_widgets: list[ctk.CTkFrame] = []
+
+        add_row = ctk.CTkFrame(todo_container, fg_color="transparent")
+        add_row.pack(fill="x", padx=40)
+        self.todo_entry = ctk.CTkEntry(add_row, placeholder_text="New todo...")
+        self.todo_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.todo_entry.bind("<Return>", lambda e: self._add_todo())
+        ctk.CTkButton(add_row, text="+", width=32, height=28, command=self._add_todo).pack(side="right")
+
+        self._refresh_todo_list()
+
         ctk.CTkFrame(center, fg_color="transparent", height=0).pack(expand=True, fill="y")
 
-        # Hint text at the very bottom of the tab
         self.hint_label = ctk.CTkLabel(parent, text="", text_color="gray60",
                                         font=ctk.CTkFont(size=13))
         self.hint_label.pack(side="bottom", pady=(0, 12))
@@ -195,16 +201,186 @@ class TomaTimerApp(ctk.CTk):
         ctk.CTkButton(top, text="Export CSV", width=100, command=self._export_csv).pack(side="left", padx=6)
         ctk.CTkButton(top, text="Export JSON", width=100, command=self._export_json).pack(side="left")
 
-        # Metrics summary
         self.metrics_label = ctk.CTkLabel(parent, text="", anchor="w", justify="left",
                                           font=ctk.CTkFont(size=14))
         self.metrics_label.pack(fill="x", padx=12, pady=(8, 4))
 
-        # Matplotlib canvas container
         self.canvas_frame = ctk.CTkFrame(parent, fg_color="transparent")
         self.canvas_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
         self._canvas: FigureCanvasTkAgg | None = None
 
+        self._refresh_stats()
+
+    # ------------------------------------------------------------------ #
+    # Settings tab
+    # ------------------------------------------------------------------ #
+    def _switch_to_settings(self) -> None:
+        self.tabview.set("Settings")
+
+    def _build_settings_tab(self, parent) -> None:
+        scroll = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=8, pady=8)
+
+        pad = {"padx": 16, "pady": 6}
+
+        ctk.CTkLabel(scroll, text="Settings", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(16, 8))
+
+        # --- Timer durations ---
+        ctk.CTkLabel(scroll, text="Timer (minutes)", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16)
+
+        self.st_focus_var = ctk.IntVar(value=self.config["focus_minutes"])
+        self.st_short_var = ctk.IntVar(value=self.config["short_break_minutes"])
+        self.st_long_var = ctk.IntVar(value=self.config["long_break_minutes"])
+        self.st_cycles_var = ctk.IntVar(value=self.config["sessions_before_long_break"])
+
+        self._settings_slider_row(scroll, "Focus length", self.st_focus_var, 1, 120)
+        self._settings_slider_row(scroll, "Short break", self.st_short_var, 1, 60)
+        self._settings_slider_row(scroll, "Long break", self.st_long_var, 1, 60)
+        self._settings_slider_row(scroll, "Sessions per cycle", self.st_cycles_var, 1, 12)
+
+        # --- Behaviour ---
+        ctk.CTkLabel(scroll, text="Behaviour", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
+
+        self.st_auto_break_var = ctk.BooleanVar(value=self.config["auto_start_breaks"])
+        self.st_auto_focus_var = ctk.BooleanVar(value=self.config["auto_start_focus"])
+        self.st_sound_var = ctk.BooleanVar(value=self.config["sound_enabled"])
+
+        ctk.CTkSwitch(scroll, text="Auto-start breaks", variable=self.st_auto_break_var, command=self._apply_settings_now).pack(anchor="w", **pad)
+        ctk.CTkSwitch(scroll, text="Auto-start next focus", variable=self.st_auto_focus_var, command=self._apply_settings_now).pack(anchor="w", **pad)
+        ctk.CTkSwitch(scroll, text="Sound notifications", variable=self.st_sound_var, command=self._apply_settings_now).pack(anchor="w", **pad)
+
+        # --- Sound file ---
+        ctk.CTkLabel(scroll, text="Sound", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
+        sound_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        sound_frame.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(sound_frame, text="Sound file:").pack(side="left")
+        self.st_sound_path_entry = ctk.CTkEntry(sound_frame, placeholder_text="default chime")
+        self.st_sound_path_entry.pack(side="left", fill="x", expand=True, padx=(8, 4))
+        if self.config["sound_path"]:
+            self.st_sound_path_entry.insert(0, self.config["sound_path"])
+        ctk.CTkButton(sound_frame, text="Browse", width=80, command=self._st_browse_sound).pack(side="left")
+        ctk.CTkButton(sound_frame, text="Test", width=60, command=self._st_test_sound).pack(side="left", padx=(4, 0))
+
+        # --- Data ---
+        ctk.CTkLabel(scroll, text="Data", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
+        ctk.CTkButton(
+            scroll, text="Delete All Records",
+            fg_color="#b91c1c", hover_color="#991b1b",
+            text_color="white",
+            command=self._st_confirm_clear_data,
+        ).pack(anchor="w", padx=16, pady=(8, 0))
+
+        # --- Reset ---
+        ctk.CTkButton(
+            scroll, text="Reset to defaults",
+            fg_color="transparent", border_width=1,
+            command=self._st_reset_defaults,
+        ).pack(anchor="w", padx=16, pady=(16, 24))
+
+    def _settings_slider_row(self, parent, label_text: str, var: ctk.IntVar, lo: int, hi: int) -> None:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=4)
+        ctk.CTkLabel(row, text=label_text, width=140, anchor="w").pack(side="left")
+
+        entry = ctk.CTkEntry(row, width=60, justify="center")
+        entry.insert(0, str(var.get()))
+        entry.pack(side="right", padx=(4, 0))
+
+        def sync_entry():
+            try:
+                v = int(entry.get())
+                v = max(lo, min(hi, v))
+                var.set(v)
+                entry.delete(0, "end")
+                entry.insert(0, str(v))
+                slider.set(v)
+                self._apply_settings_now()
+            except ValueError:
+                entry.delete(0, "end")
+                entry.insert(0, str(var.get()))
+
+        entry.bind("<Return>", lambda e: sync_entry())
+        entry.bind("<FocusOut>", lambda e: sync_entry())
+
+        def on_slider(v):
+            iv = int(float(v))
+            var.set(iv)
+            entry.delete(0, "end")
+            entry.insert(0, str(iv))
+            self._apply_settings_now()
+
+        slider = ctk.CTkSlider(row, from_=lo, to=hi, command=on_slider)
+        slider.set(var.get())
+        slider.pack(side="left", fill="x", expand=True, padx=(8, 8))
+
+    def _st_browse_sound(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select notification sound",
+            filetypes=[("Audio files", "*.mp3 *.flac *.wav *.ogg"), ("All files", "*.*")],
+        )
+        if path:
+            self.st_sound_path_entry.delete(0, "end")
+            self.st_sound_path_entry.insert(0, path)
+            self._apply_settings_now()
+
+    def _st_test_sound(self) -> None:
+        play(self.st_sound_path_entry.get() or "", self.config.get("sound_volume", 0.7))
+
+    def _st_confirm_clear_data(self) -> None:
+        import tkinter.messagebox as mb
+        if not mb.askyesno(
+            "Delete All Records",
+            "This will permanently delete ALL sessions and todos.\n\nAre you sure?",
+            icon="warning", parent=self,
+        ):
+            return
+        from database import clear_all_data
+        clear_all_data()
+        self._refresh_stats()
+        self._refresh_todo_list()
+        self._show_toast("All records deleted")
+
+    def _st_reset_defaults(self) -> None:
+        self._apply_settings(DEFAULTS)
+        self._rebuild_settings_tab()
+        self._show_toast("Settings reset to defaults")
+
+    def _rebuild_settings_tab(self) -> None:
+        """Destroy and rebuild the settings tab to reflect new values."""
+        tab = self.tabview.tab("Settings")
+        for w in list(tab.winfo_children()):
+            w.destroy()
+        self._build_settings_tab(tab)
+
+    def _apply_settings_now(self) -> None:
+        """Read current settings tab vars and apply."""
+        new = {
+            "focus_minutes": int(self.st_focus_var.get()),
+            "short_break_minutes": int(self.st_short_var.get()),
+            "long_break_minutes": int(self.st_long_var.get()),
+            "sessions_before_long_break": int(self.st_cycles_var.get()),
+            "auto_start_breaks": bool(self.st_auto_break_var.get()),
+            "auto_start_focus": bool(self.st_auto_focus_var.get()),
+            "sound_enabled": bool(self.st_sound_var.get()),
+            "sound_path": self.st_sound_path_entry.get().strip(),
+        }
+        self._apply_settings(new)
+
+    def _apply_settings(self, new_config: dict) -> None:
+        self.config.update(new_config)
+        save(self.config)
+        self.engine.focus_minutes = new_config["focus_minutes"]
+        self.engine.short_break_minutes = new_config["short_break_minutes"]
+        self.engine.long_break_minutes = new_config["long_break_minutes"]
+        self.engine.sessions_before_long_break = max(1, new_config["sessions_before_long_break"])
+        self.engine.auto_start_breaks = new_config["auto_start_breaks"]
+        self.engine.auto_start_focus = new_config["auto_start_focus"]
+        ctk.set_appearance_mode(new_config["theme"])
+        self.theme_switch.set(new_config["theme"])
+        self.theme_switch.configure(text=self._theme_label(new_config["theme"]))
+        self._refresh_session_dots()
+        if self.engine.state == State.IDLE:
+            self.time_label.configure(text=fmt_time(new_config["focus_minutes"] * 60))
         self._refresh_stats()
 
     # ------------------------------------------------------------------ #
@@ -219,22 +395,21 @@ class TomaTimerApp(ctk.CTk):
         for i in range(n):
             if i < len(states):
                 if states[i] is True:
-                    char, color = "*", "#3b82f6"    # completed = blue
+                    char, color = "*", "#3b82f6"
                 elif states[i] is False:
-                    char, color = "*", "#ef4444"    # skipped early = red
+                    char, color = "*", "#ef4444"
                 else:
-                    char, color = "o", "gray50"     # in progress = pending
+                    char, color = "o", "gray50"
             else:
-                char, color = "o", "gray50"         # not yet started = pending
+                char, color = "o", "gray50"
             lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=24), text_color=color)
             lbl.pack(side="left", padx=6)
             self._dot_widgets.append(lbl)
 
     # ------------------------------------------------------------------ #
-    # Marshalled callbacks (engine runs on a bg thread)
+    # Marshalled callbacks
     # ------------------------------------------------------------------ #
     def _marshal(self, fn, *args):
-        """Schedule `fn(*args)` on the Tk main thread."""
         self.after(0, lambda: fn(*args))
 
     def _on_tick(self, remaining: int, total: int) -> None:
@@ -246,7 +421,6 @@ class TomaTimerApp(ctk.CTk):
     def _on_session_end(self, session_type: str, completed: bool) -> None:
         self._marshal(self._ui_session_end, session_type, completed)
 
-    # ---- UI-side handlers (run on main thread) ----
     def _ui_tick(self, remaining: int, total: int) -> None:
         self.time_label.configure(text=fmt_time(remaining))
         if total > 0:
@@ -256,14 +430,11 @@ class TomaTimerApp(ctk.CTk):
         label = STATE_LABELS.get(state, str(state))
         self.state_label.configure(text=label)
         self._refresh_session_dots()
-
         running = state in (State.FOCUS, State.SHORT_BREAK, State.LONG_BREAK)
         self.start_btn.configure(state="disabled" if running else "normal")
-        self.pause_btn.configure(state="normal" if running else "disabled",
-                                 text="Pause")
+        self.pause_btn.configure(state="normal" if running else "disabled", text="Pause")
         if state == State.IDLE:
             self.progress.set(0)
-            # Show next-phase hint
             if self.engine._cycle_position >= self.engine.sessions_before_long_break:
                 self.hint_label.configure(text="Next: Long Break")
             elif self.engine._cycle_position > 0:
@@ -276,7 +447,6 @@ class TomaTimerApp(ctk.CTk):
     def _ui_session_end(self, session_type: str, completed: bool) -> None:
         if completed and self.config.get("sound_enabled", True):
             play(self.config.get("sound_path", ""), self.config.get("sound_volume", 0.7))
-        # If stats tab is visible, refresh it lazily - always refresh to keep numbers live
         self._refresh_stats()
 
     # ------------------------------------------------------------------ #
@@ -306,11 +476,65 @@ class TomaTimerApp(ctk.CTk):
         self.theme_switch.configure(text=self._theme_label(new_theme))
         self.config["theme"] = new_theme
         save(self.config)
-        self._refresh_stats()  # rebuild figure with new theme
+        self._refresh_stats()
 
     @staticmethod
     def _theme_label(theme: str) -> str:
         return "Dark" if theme == "dark" else "Light"
+
+    # ------------------------------------------------------------------ #
+    # To-Do list
+    # ------------------------------------------------------------------ #
+    def _refresh_todo_list(self) -> None:
+        from database import get_all_todos
+        for w in self._todo_widgets:
+            w.destroy()
+        self._todo_widgets.clear()
+        todos = get_all_todos()
+        for t in todos:
+            row = ctk.CTkFrame(self.todo_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            var = ctk.StringVar(value="on" if t["completed"] else "off")
+            cb = ctk.CTkCheckBox(
+                row, text="", width=20, variable=var, onvalue="on", offvalue="off",
+                command=lambda tid=t["id"], v=var: self._toggle_todo(tid, v),
+            )
+            cb.pack(side="left", padx=(0, 6))
+            lbl = ctk.CTkLabel(
+                row, text=t["text"], anchor="w",
+                font=ctk.CTkFont(size=14, overstrike=bool(t["completed"])),
+                text_color=("gray30", "gray70") if t["completed"] else ("gray10", "gray90"),
+            )
+            lbl.pack(side="left", fill="x", expand=True)
+            lbl.bind("<Double-Button-1>", lambda e, tid=t["id"]: self._delete_todo(tid))
+            self._todo_widgets.append(row)
+
+    def _add_todo(self) -> None:
+        text = self.todo_entry.get().strip()
+        if not text:
+            return
+        from database import add_todo
+        add_todo(text)
+        self.todo_entry.delete(0, "end")
+        self._refresh_todo_list()
+
+    def _toggle_todo(self, todo_id: int, var: ctk.StringVar) -> None:
+        from database import set_todo_completed
+        completed = var.get() == "on"
+        set_todo_completed(todo_id, completed)
+        self._refresh_todo_list()
+
+    def _remove_completed_todos(self) -> None:
+        from database import remove_completed_todos
+        n = remove_completed_todos()
+        self._refresh_todo_list()
+        if n > 0:
+            self._show_toast(f"Removed {n} completed todo(s)")
+
+    def _delete_todo(self, todo_id: int) -> None:
+        from database import delete_todo
+        delete_todo(todo_id)
+        self._refresh_todo_list()
 
     # ------------------------------------------------------------------ #
     # Stats
@@ -319,8 +543,6 @@ class TomaTimerApp(ctk.CTk):
         sessions = get_all_sessions()
         metrics = compute_metrics(sessions)
         self.metrics_label.configure(text=self._format_metrics(metrics))
-
-        # Rebuild canvas
         if self._canvas is not None:
             self._canvas.get_tk_widget().destroy()
         theme = self.config.get("theme", "dark")
@@ -356,44 +578,13 @@ class TomaTimerApp(ctk.CTk):
         self._show_toast(f"JSON exported to {path}")
 
     def _show_toast(self, msg: str) -> None:
-        # Reuse the hint label area in the timer tab for ephemeral messages.
         self.hint_label.configure(text=msg)
         self.after(4000, lambda: self.hint_label.configure(text=""))
-
-    # ------------------------------------------------------------------ #
-    # Settings dialog
-    # ------------------------------------------------------------------ #
-    def _open_settings(self) -> None:
-        SettingsDialog(self, self.config, on_save=self._apply_settings)
-
-    def _apply_settings(self, new_config: dict) -> None:
-        self.config = new_config
-        save(self.config)
-        # Push new durations into the running engine
-        self.engine.focus_minutes = new_config["focus_minutes"]
-        self.engine.short_break_minutes = new_config["short_break_minutes"]
-        self.engine.long_break_minutes = new_config["long_break_minutes"]
-        self.engine.sessions_before_long_break = max(1, new_config["sessions_before_long_break"])
-        self.engine.auto_start_breaks = new_config["auto_start_breaks"]
-        self.engine.auto_start_focus = new_config["auto_start_focus"]
-        ctk.set_appearance_mode(new_config["theme"])
-        self.theme_switch.set(new_config["theme"])
-        self.theme_switch.configure(text=self._theme_label(new_config["theme"]))
-        self._refresh_session_dots()
-        if self.engine.state == State.IDLE:
-            self.time_label.configure(text=fmt_time(new_config["focus_minutes"] * 60))
-        self._refresh_stats()
 
     # ------------------------------------------------------------------ #
     # Window icon
     # ------------------------------------------------------------------ #
     def _set_window_icon(self) -> None:
-        """Set the tomato window icon (title bar / taskbar).
-
-        Uses PhotoImage + `wm iconphoto` so PNG works on X11 (iconbitmap
-        only accepts XBM on X11). Looks for assets/icons/toma-timer.png
-        relative to the source file. Non-fatal if missing.
-        """
         from pathlib import Path
         import tkinter as tk
         candidates = [
@@ -407,37 +598,26 @@ class TomaTimerApp(ctk.CTk):
                     self.iconphoto(True, self._icon_photo)
                     return
                 except Exception:
-                    pass  # fall through silently
+                    pass
 
     # ------------------------------------------------------------------ #
     # WM properties
     # ------------------------------------------------------------------ #
     def _fix_wm_properties(self) -> None:
-        """Set clean WM_CLASS + _NET_WM_WINDOW_TYPE_NORMAL + _NET_WM_PID.
-
-        Runs before the window is mapped (called from __init__ before
-        mainloop). Overrides Tk's mangled WM_CLASS ("Tomatimer") with
-        "toma-timer" on both the client window and its parent frame.
-        """
         try:
             from Xlib import display
             from Xlib.xobject.drawable import Window
-
             d = display.Display()
             client = Window(d.display, self.winfo_id())
             parent = client.query_tree().parent
-
             val = "toma-timer\0toma-timer\0".encode()
             atom = d.intern_atom("WM_CLASS")
             typ = d.intern_atom("STRING")
             for win in (client, parent):
                 win.change_property(atom, typ, 8, val)
-
             type_atom = d.intern_atom("_NET_WM_WINDOW_TYPE")
             normal = d.intern_atom("_NET_WM_WINDOW_TYPE_NORMAL")
-            parent.change_property(type_atom, d.intern_atom("ATOM"), 32,
-                                    [normal])
-
+            parent.change_property(type_atom, d.intern_atom("ATOM"), 32, [normal])
             pid_atom = d.intern_atom("_NET_WM_PID")
             card = d.intern_atom("CARDINAL")
             import os
@@ -447,23 +627,13 @@ class TomaTimerApp(ctk.CTk):
             pass
 
     def _request_tile_hyprland(self) -> None:
-        """If running under Hyprland, force this window to tile via IPC.
-
-        Hyprland's XWayland bridge doesn't process EWMH maximize requests
-        reliably. We use hyprctl IPC to find the window by PID. If the
-        window is floating, we toggle it to tiling. Non-fatal if hyprctl
-        isn't available or the window is already tiled.
-        """
         import os
         if "HYPRLAND_INSTANCE_SIGNATURE" not in os.environ:
             return
         try:
             import json
             import subprocess
-            result = subprocess.run(
-                ["hyprctl", "clients", "-j"],
-                capture_output=True, text=True, timeout=3,
-            )
+            result = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=3)
             if result.returncode != 0:
                 return
             clients = json.loads(result.stdout)
@@ -472,11 +642,7 @@ class TomaTimerApp(ctk.CTk):
                 if c.get("pid") == my_pid:
                     if c.get("floating", False):
                         addr = c["address"]
-                        subprocess.run(
-                            ["hyprctl", "dispatch", "togglefloating",
-                             f"window:{addr}"],
-                            capture_output=True, timeout=2,
-                        )
+                        subprocess.run(["hyprctl", "dispatch", "togglefloating", f"window:{addr}"], capture_output=True, timeout=2)
                     break
         except Exception:
             pass
@@ -485,149 +651,13 @@ class TomaTimerApp(ctk.CTk):
     # Lifecycle
     # ------------------------------------------------------------------ #
     def _on_close(self) -> None:
-        """Window close button: hide to tray if tray docked, else quit."""
         if self.tray is not None and self.tray.is_active():
-            self.withdraw()  # hide window; tray keeps app alive in background
+            self.withdraw()
         else:
             self._quit()
 
     def _quit(self) -> None:
-        """Fully exit the application."""
         self.engine.stop_engine()
         if self.tray is not None:
             self.tray.stop()
-        self.destroy()
-
-
-class SettingsDialog(ctk.CTkToplevel):
-    """Modal-ish settings window. Calls `on_save(new_config)` on apply."""
-
-    def __init__(self, master, config: dict, on_save) -> None:
-        super().__init__(master)
-        self.transient(master)
-        self.title("Settings")
-        self.geometry("440x620")
-        self.resizable(False, False)
-
-        self.config = dict(config)
-        self.on_save = on_save
-        self.master_app = master
-
-        self.grab_set()
-        self.focus()
-
-        self._build()
-
-    def _build(self) -> None:
-        pad = {"padx": 16, "pady": 6}
-        ctk.CTkLabel(self, text="Settings", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(16, 8))
-
-        # --- Timer durations ---
-        section = ctk.CTkLabel(self, text="Timer (minutes)", font=ctk.CTkFont(size=14, weight="bold"))
-        section.pack(anchor="w", padx=16)
-
-        self.focus_var = ctk.IntVar(value=self.config["focus_minutes"])
-        self.short_var = ctk.IntVar(value=self.config["short_break_minutes"])
-        self.long_var = ctk.IntVar(value=self.config["long_break_minutes"])
-        self.cycles_var = ctk.IntVar(value=self.config["sessions_before_long_break"])
-
-        self._slider_row("Focus length", self.focus_var, 1, 120, self.config["focus_minutes"])
-        self._slider_row("Short break", self.short_var, 1, 60, self.config["short_break_minutes"])
-        self._slider_row("Long break", self.long_var, 1, 60, self.config["long_break_minutes"])
-        self._slider_row("Sessions per cycle", self.cycles_var, 1, 12, self.config["sessions_before_long_break"])
-
-        # --- Behaviour ---
-        ctk.CTkLabel(self, text="Behaviour", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
-        self.auto_break_var = ctk.BooleanVar(value=self.config["auto_start_breaks"])
-        self.auto_focus_var = ctk.BooleanVar(value=self.config["auto_start_focus"])
-        self.sound_var = ctk.BooleanVar(value=self.config["sound_enabled"])
-
-        ctk.CTkSwitch(self, text="Auto-start breaks", variable=self.auto_break_var).pack(anchor="w", **pad)
-        ctk.CTkSwitch(self, text="Auto-start next focus", variable=self.auto_focus_var).pack(anchor="w", **pad)
-        ctk.CTkSwitch(self, text="Sound notifications", variable=self.sound_var).pack(anchor="w", **pad)
-
-        # --- Sound file ---
-        sound_frame = ctk.CTkFrame(self, fg_color="transparent")
-        sound_frame.pack(fill="x", padx=16, pady=(8, 0))
-        ctk.CTkLabel(sound_frame, text="Sound file:").pack(side="left")
-        self.sound_path_entry = ctk.CTkEntry(sound_frame, placeholder_text="default chime")
-        self.sound_path_entry.pack(side="left", fill="x", expand=True, padx=(8, 4))
-        if self.config["sound_path"]:
-            self.sound_path_entry.insert(0, self.config["sound_path"])
-        ctk.CTkButton(sound_frame, text="Browse", width=80, command=self._browse_sound).pack(side="left")
-        ctk.CTkButton(sound_frame, text="Test", width=60, command=self._test_sound).pack(side="left", padx=(4, 0))
-
-        # --- Buttons ---
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=16, pady=(16, 16), side="bottom")
-        ctk.CTkButton(btn_frame, text="Reset to defaults", fg_color="transparent", border_width=1, command=self._reset_defaults).pack(side="left")
-        ctk.CTkButton(btn_frame, text="Cancel", fg_color="transparent", command=self.destroy).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(btn_frame, text="Apply", command=self._apply).pack(side="right")
-
-    def _slider_row(self, label_text: str, var: ctk.IntVar, lo: int, hi: int, default: int) -> None:
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=4)
-        ctk.CTkLabel(row, text=label_text, width=140, anchor="w").pack(side="left")
-
-        entry = ctk.CTkEntry(row, width=60, justify="center")
-        entry.insert(0, str(default))
-        entry.pack(side="right", padx=(4, 0))
-
-        def sync_entry():
-            """Read entry text, validate, push to var + slider."""
-            try:
-                v = int(entry.get())
-                v = max(lo, min(hi, v))
-                var.set(v)
-                entry.delete(0, "end")
-                entry.insert(0, str(v))
-                slider.set(v)
-            except ValueError:
-                # Reset to current var value
-                entry.delete(0, "end")
-                entry.insert(0, str(var.get()))
-
-        entry.bind("<Return>", lambda e: sync_entry())
-        entry.bind("<FocusOut>", lambda e: sync_entry())
-
-        def on_slider(v):
-            iv = int(float(v))
-            var.set(iv)
-            entry.delete(0, "end")
-            entry.insert(0, str(iv))
-
-        slider = ctk.CTkSlider(row, from_=lo, to=hi, command=on_slider)
-        slider.set(default)
-        slider.pack(side="left", fill="x", expand=True, padx=(8, 8))
-
-    def _browse_sound(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select notification sound",
-            filetypes=[("Audio files", "*.mp3 *.flac *.wav *.ogg"), ("All files", "*.*")],
-        )
-        if path:
-            self.sound_path_entry.delete(0, "end")
-            self.sound_path_entry.insert(0, path)
-
-    def _test_sound(self) -> None:
-        play(self.sound_path_entry.get() or "", self.config.get("sound_volume", 0.7))
-
-    def _reset_defaults(self) -> None:
-        from config import DEFAULTS
-        self.config = dict(DEFAULTS)
-        self.destroy()
-        self.master_app._open_settings()
-
-    def _apply(self) -> None:
-        self.config.update({
-            "focus_minutes": int(self.focus_var.get()),
-            "short_break_minutes": int(self.short_var.get()),
-            "long_break_minutes": int(self.long_var.get()),
-            "sessions_before_long_break": int(self.cycles_var.get()),
-            "auto_start_breaks": bool(self.auto_break_var.get()),
-            "auto_start_focus": bool(self.auto_focus_var.get()),
-            "sound_enabled": bool(self.sound_var.get()),
-            "sound_path": self.sound_path_entry.get().strip(),
-        })
-        self.on_save(self.config)
         self.destroy()
