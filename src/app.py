@@ -58,6 +58,10 @@ class TomaTimerApp(ctk.CTk):
         # className sets a baseline X11 WM_CLASS (Tk mangles casing to
         # "Tomatimer"); good enough for best-effort window focus.
         super().__init__(className="TomaTimer")
+        # Tell the WM this is a normal application window (not dialog/tooltip),
+        # so tiling WMs apply their standard tiling/maximize rules and waybar
+        # is not obscured on fullscreen.
+        self.wm_attributes('-type', 'normal')
         self.config = load()
         init_db()
 
@@ -87,6 +91,8 @@ class TomaTimerApp(ctk.CTk):
 
         self._build_ui()
         self._refresh_session_dots()
+        # Fix WM_CLASS on both client + frame after the window is realized.
+        self.after(100, self._fix_wm_properties)
         # (WM_CLASS is set pre-map above, no deferred call needed)
 
         # Clean shutdown
@@ -398,6 +404,39 @@ class TomaTimerApp(ctk.CTk):
                     return
                 except Exception:
                     pass  # fall through silently
+
+    # ------------------------------------------------------------------ #
+    # WM properties
+    # ------------------------------------------------------------------ #
+    def _fix_wm_properties(self) -> None:
+        """Set clean WM_CLASS on both client and frame windows.
+
+        Tk's className param mangles the WM_CLASS casing (e.g. "TomaTimer"
+        becomes "Tomatimer"). Tiling WMs rely on the class for rules; we
+        override it to "toma-timer" on both the client window and its
+        parent frame (WM reparents the client into a frame and reads the
+        frame's property). Also sets _NET_WM_PID so the WM can identify
+        the process.
+        """
+        try:
+            from Xlib import display
+            from Xlib.xobject.drawable import Window
+            d = display.Display()
+            client = Window(d.display, self.winfo_id())
+            parent = client.query_tree().parent
+            val = "toma-timer\0toma-timer\0".encode()
+            atom = d.intern_atom("WM_CLASS")
+            typ = d.intern_atom("STRING")
+            for win in (client, parent):
+                win.change_property(atom, typ, 8, val)
+            # Also set _NET_WM_PID for process identification
+            pid_atom = d.intern_atom("_NET_WM_PID")
+            card = d.intern_atom("CARDINAL")
+            import os
+            client.change_property(pid_atom, card, 32, [os.getpid()])
+            d.flush()
+        except Exception:
+            pass  # non-X11 or xlib missing
 
     # ------------------------------------------------------------------ #
     # Lifecycle
