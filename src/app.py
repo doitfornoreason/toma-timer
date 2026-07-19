@@ -63,10 +63,13 @@ class TomaTimerApp(ctk.CTk):
 
         ctk.set_appearance_mode(self.config["theme"])
         ctk.set_default_color_theme(self.config["color_theme"])
+        # Scale entire UI proportionally (fonts, widgets, spacing)
+        ctk.set_widget_scaling(1.5)
+        ctk.set_window_scaling(1.15)
 
         self.title("Toma Timer")
-        self.geometry("720x560")
-        self.minsize(640, 500)
+        self.geometry("960x700")
+        self.minsize(800, 600)
         self._set_window_icon()
 
         # Timer engine. Callbacks marshalled to main thread.
@@ -117,46 +120,63 @@ class TomaTimerApp(ctk.CTk):
         self._build_stats_tab(self.tabview.tab("Stats"))
 
     def _build_timer_tab(self, parent) -> None:
+        # Center frame that fills the tab (spacers push content to vertical center)
+        center = ctk.CTkFrame(parent, fg_color="transparent")
+        center.pack(expand=True, fill="both")
+
+        # Top spacer
+        ctk.CTkFrame(center, fg_color="transparent", height=0).pack(expand=True, fill="y")
+
         # State label
-        self.state_label = ctk.CTkLabel(parent, text="Ready", font=ctk.CTkFont(size=20, weight="bold"))
-        self.state_label.pack(pady=(24, 8))
+        self.state_label = ctk.CTkLabel(center, text="Ready",
+                                        font=ctk.CTkFont(size=18, weight="bold"))
+        self.state_label.pack(pady=(0, 8))
 
         # Big countdown
         self.time_label = ctk.CTkLabel(
-            parent, text=fmt_time(self.config["focus_minutes"] * 60),
-            font=ctk.CTkFont(size=104, weight="bold"),
+            center, text=fmt_time(self.config["focus_minutes"] * 60),
+            font=ctk.CTkFont(size=90, weight="bold"),
         )
         self.time_label.pack(pady=(0, 12))
 
         # Progress bar
-        self.progress = ctk.CTkProgressBar(parent, width=420, height=10)
+        self.progress = ctk.CTkProgressBar(center, width=400, height=12)
         self.progress.set(0)
         self.progress.pack(pady=(0, 16))
 
-        # Session cycle dots container
-        self.dots_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        # Session cycle dots
+        self.dots_frame = ctk.CTkFrame(center, fg_color="transparent")
         self.dots_frame.pack(pady=(0, 16))
         self._dot_widgets: list[ctk.CTkLabel] = []
 
         # Control buttons
-        btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_frame = ctk.CTkFrame(center, fg_color="transparent")
         btn_frame.pack(pady=(0, 8))
 
         self.start_btn = ctk.CTkButton(btn_frame, text="Start", width=110, command=self._on_start)
         self.start_btn.grid(row=0, column=0, padx=6)
 
-        self.pause_btn = ctk.CTkButton(btn_frame, text="Pause", width=110, command=self._on_pause, state="disabled")
+        self.pause_btn = ctk.CTkButton(btn_frame, text="Pause", width=110, command=self._on_pause,
+                                        state="disabled")
         self.pause_btn.grid(row=0, column=1, padx=6)
 
-        self.reset_btn = ctk.CTkButton(btn_frame, text="Reset", width=110, command=self._on_reset, fg_color="transparent", border_width=1)
+        self.reset_btn = ctk.CTkButton(btn_frame, text="Reset", width=110, command=self._on_reset,
+                                        fg_color="transparent", border_width=1,
+                                        text_color=("gray20", "gray90"))
         self.reset_btn.grid(row=0, column=2, padx=6)
 
-        self.skip_btn = ctk.CTkButton(btn_frame, text="Skip", width=110, command=self._on_skip, fg_color="transparent", border_width=1)
+        self.skip_btn = ctk.CTkButton(btn_frame, text="Skip", width=110, command=self._on_skip,
+                                       fg_color="transparent", border_width=1,
+                                       text_color=("gray20", "gray90"))
         self.skip_btn.grid(row=0, column=3, padx=6)
 
-        # Hint text
-        self.hint_label = ctk.CTkLabel(parent, text="", text_color="gray60", font=ctk.CTkFont(size=13))
-        self.hint_label.pack(pady=(8, 0))
+        # Bottom spacer
+        ctk.CTkFrame(center, fg_color="transparent", height=0).pack(expand=True, fill="y")
+
+        # Hint text at the very bottom of the tab
+        self.hint_label = ctk.CTkLabel(parent, text="", text_color="gray60",
+                                        font=ctk.CTkFont(size=13))
+        self.hint_label.pack(side="bottom", pady=(0, 12))
 
     def _build_stats_tab(self, parent) -> None:
         top = ctk.CTkFrame(parent, fg_color="transparent")
@@ -196,7 +216,7 @@ class TomaTimerApp(ctk.CTk):
                     char, color = "o", "gray50"     # in progress = pending
             else:
                 char, color = "o", "gray50"         # not yet started = pending
-            lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=30), text_color=color)
+            lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=24), text_color=color)
             lbl.pack(side="left", padx=6)
             self._dot_widgets.append(lbl)
 
