@@ -41,7 +41,7 @@ def main() -> None:
         tray.start()
         app.tray = tray
     except Exception as exc:  # noqa: BLE001
-        # Tray is optional — app still works without it.
+        # Tray is optional - app still works without it.
         print(f"[toma-timer] Tray disabled: {exc}", file=sys.stderr)
         app.tray = None
 

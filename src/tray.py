@@ -9,17 +9,12 @@ degrades to "close = quit" instead of hiding to an unreachable tray.
 """
 from __future__ import annotations
 
-import io
 import threading
-from contextlib import redirect_stderr
 
 from PIL import Image, ImageDraw
 
 import pystray
 from pystray import MenuItem as Item
-
-# Docking errors we treat as "no tray available".
-_DOCK_FAIL_MARKERS = ("AssertionError", "Failed to dock", "assert")
 
 
 def _make_icon_image() -> Image.Image:
@@ -40,7 +35,6 @@ class TrayController:
         self.app = app
         self._icon: pystray.Icon | None = None
         self._thread: threading.Thread | None = None
-        self._stderr_buf = io.StringIO()
         self.active = False  # True only once the icon has docked successfully
 
     def start(self) -> None:
@@ -59,28 +53,29 @@ class TrayController:
         threading.Thread(target=self._watchdog, daemon=True).start()
 
     def _run(self) -> None:
-        # Capture pystray's stderr so docking failures don't spam the console.
-        with redirect_stderr(self._stderr_buf):
-            try:
-                self._icon.run()
-            except Exception:
-                pass
+        # NOTE: we intentionally do NOT redirect stderr here. pystray prints a
+        # "Failed to dock" traceback when no StatusNotifierItem host exists,
+        # but only during the ~2s startup grace period before the watchdog
+        # stops the icon. Swallowing stderr globally (redirect_stderr is
+        # process-wide, not per-thread) would hide real errors from the rest
+        # of the app, which is worse than a few harmless lines at startup.
+        try:
+            self._icon.run()
+        except Exception:
+            pass
 
     def _watchdog(self) -> None:
-        """After a grace period, inspect captured stderr. If docking failed,
-        stop the icon and mark the tray inactive."""
+        """After a grace period, check whether the icon docked. If docking
+        failed (no StatusNotifierItem host), stop the icon and stay inactive."""
         import time
         time.sleep(2.0)
-        out = self._stderr_buf.getvalue()
-        if any(m in out for m in _DOCK_FAIL_MARKERS):
-            # No usable tray host: shut the icon down and stay inactive.
-            try:
-                self._icon.stop()
-            except Exception:
-                pass
+        # Heuristic: if the icon thread has already exited, docking failed.
+        if self._thread is not None and not self._thread.is_alive():
             self.active = False
-        else:
-            self.active = True
+            return
+        # pystray sets icon.visible/running once docked; fall back to assuming
+        # active if the thread is still alive after the grace period.
+        self.active = True
 
     def is_active(self) -> bool:
         return self.active

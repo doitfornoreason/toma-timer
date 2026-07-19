@@ -55,7 +55,9 @@ STATE_COLORS = {
 
 class TomaTimerApp(ctk.CTk):
     def __init__(self) -> None:
-        super().__init__()
+        # className sets a baseline X11 WM_CLASS (Tk mangles casing to
+        # "Tomatimer"); good enough for best-effort window focus.
+        super().__init__(className="TomaTimer")
         self.config = load()
         init_db()
 
@@ -65,6 +67,7 @@ class TomaTimerApp(ctk.CTk):
         self.title("Toma Timer")
         self.geometry("720x560")
         self.minsize(640, 500)
+        self._set_window_icon()
 
         # Timer engine. Callbacks marshalled to main thread.
         self.engine = TimerEngine(
@@ -81,6 +84,7 @@ class TomaTimerApp(ctk.CTk):
 
         self._build_ui()
         self._refresh_session_dots()
+        # (WM_CLASS is set pre-map above, no deferred call needed)
 
         # Clean shutdown
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -94,16 +98,16 @@ class TomaTimerApp(ctk.CTk):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(12, 4))
 
-        ctk.CTkLabel(header, text="🍅 Toma Timer", font=ctk.CTkFont(size=22, weight="bold")).pack(side="left")
+        ctk.CTkLabel(self, text="Toma Timer", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
 
         self.theme_switch = ctk.CTkSwitch(
-            header, text="Dark", command=self._toggle_theme,
+            header, text=self._theme_label(self.config["theme"]), command=self._toggle_theme,
             onvalue="dark", offvalue="light",
         )
         self.theme_switch.set(self.config["theme"])
         self.theme_switch.pack(side="right", padx=(8, 0))
 
-        ctk.CTkButton(header, text="⚙ Settings", width=100, command=self._open_settings).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(header, text="Settings", width=100, command=self._open_settings).pack(side="right", padx=(0, 4))
 
         # Tabs
         self.tabview = ctk.CTkTabview(self)
@@ -116,13 +120,13 @@ class TomaTimerApp(ctk.CTk):
 
     def _build_timer_tab(self, parent) -> None:
         # State label
-        self.state_label = ctk.CTkLabel(parent, text="Ready", font=ctk.CTkFont(size=18, weight="bold"))
+        self.state_label = ctk.CTkLabel(parent, text="Ready", font=ctk.CTkFont(size=20, weight="bold"))
         self.state_label.pack(pady=(24, 8))
 
         # Big countdown
         self.time_label = ctk.CTkLabel(
             parent, text=fmt_time(self.config["focus_minutes"] * 60),
-            font=ctk.CTkFont(size=96, weight="bold"),
+            font=ctk.CTkFont(size=104, weight="bold"),
         )
         self.time_label.pack(pady=(0, 12))
 
@@ -153,19 +157,19 @@ class TomaTimerApp(ctk.CTk):
         self.skip_btn.grid(row=0, column=3, padx=6)
 
         # Hint text
-        self.hint_label = ctk.CTkLabel(parent, text="", text_color="gray60", font=ctk.CTkFont(size=12))
+        self.hint_label = ctk.CTkLabel(parent, text="", text_color="gray60", font=ctk.CTkFont(size=13))
         self.hint_label.pack(pady=(8, 0))
 
     def _build_stats_tab(self, parent) -> None:
         top = ctk.CTkFrame(parent, fg_color="transparent")
         top.pack(fill="x", padx=8, pady=(8, 4))
-        ctk.CTkButton(top, text="↻ Refresh", width=100, command=self._refresh_stats).pack(side="left")
+        ctk.CTkButton(top, text="Refresh", width=100, command=self._refresh_stats).pack(side="left")
         ctk.CTkButton(top, text="Export CSV", width=100, command=self._export_csv).pack(side="left", padx=6)
         ctk.CTkButton(top, text="Export JSON", width=100, command=self._export_json).pack(side="left")
 
         # Metrics summary
         self.metrics_label = ctk.CTkLabel(parent, text="", anchor="w", justify="left",
-                                          font=ctk.CTkFont(size=13))
+                                          font=ctk.CTkFont(size=14))
         self.metrics_label.pack(fill="x", padx=12, pady=(8, 4))
 
         # Matplotlib canvas container
@@ -185,9 +189,9 @@ class TomaTimerApp(ctk.CTk):
         n = self.engine.sessions_before_long_break
         done = self.engine._cycle_position
         for i in range(n):
-            char = "●" if i < done else "○"
+            char = "*" if i < done else "o"
             color = "#3b82f6" if i < done else "gray50"
-            lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=22), text_color=color)
+            lbl = ctk.CTkLabel(self.dots_frame, text=char, font=ctk.CTkFont(size=24), text_color=color)
             lbl.pack(side="left", padx=6)
             self._dot_widgets.append(lbl)
 
@@ -237,7 +241,7 @@ class TomaTimerApp(ctk.CTk):
     def _ui_session_end(self, session_type: str, completed: bool) -> None:
         if completed and self.config.get("sound_enabled", True):
             play(self.config.get("sound_path", ""), self.config.get("sound_volume", 0.7))
-        # If stats tab is visible, refresh it lazily — always refresh to keep numbers live
+        # If stats tab is visible, refresh it lazily - always refresh to keep numbers live
         self._refresh_stats()
 
     # ------------------------------------------------------------------ #
@@ -264,9 +268,14 @@ class TomaTimerApp(ctk.CTk):
     def _toggle_theme(self) -> None:
         new_theme = self.theme_switch.get()
         ctk.set_appearance_mode(new_theme)
+        self.theme_switch.configure(text=self._theme_label(new_theme))
         self.config["theme"] = new_theme
         save(self.config)
         self._refresh_stats()  # rebuild figure with new theme
+
+    @staticmethod
+    def _theme_label(theme: str) -> str:
+        return "Dark" if theme == "dark" else "Light"
 
     # ------------------------------------------------------------------ #
     # Stats
@@ -297,14 +306,13 @@ class TomaTimerApp(ctk.CTk):
             f"    |    This month: {m['sessions_this_month']}",
             f"Current streak: {m['current_streak_days']} day(s)    |    "
             f"Best day: {m['best_day_date']} ({m['best_day_count']} sessions)    |    "
-            f"Most productive hour: {hour_str or '—'}",
+            f"Most productive hour: {hour_str or '-'}",
         ]
         return "\n".join(lines)
 
     def _export_csv(self) -> None:
         d = default_export_dir()
         path = export_csv(d / "toma_sessions.csv")
-        self.hint_label.configure(text=f"Exported CSV → {path}") if False else None
         self._show_toast(f"CSV exported to {path}")
 
     def _export_json(self) -> None:
@@ -335,10 +343,36 @@ class TomaTimerApp(ctk.CTk):
         self.engine.auto_start_focus = new_config["auto_start_focus"]
         ctk.set_appearance_mode(new_config["theme"])
         self.theme_switch.set(new_config["theme"])
+        self.theme_switch.configure(text=self._theme_label(new_config["theme"]))
         self._refresh_session_dots()
         if self.engine.state == State.IDLE:
             self.time_label.configure(text=fmt_time(new_config["focus_minutes"] * 60))
         self._refresh_stats()
+
+    # ------------------------------------------------------------------ #
+    # Window icon
+    # ------------------------------------------------------------------ #
+    def _set_window_icon(self) -> None:
+        """Set the tomato window icon (title bar / taskbar).
+
+        Uses PhotoImage + `wm iconphoto` so PNG works on X11 (iconbitmap
+        only accepts XBM on X11). Looks for assets/icons/toma-timer.png
+        relative to the source file. Non-fatal if missing.
+        """
+        from pathlib import Path
+        import tkinter as tk
+        candidates = [
+            Path(__file__).resolve().parent.parent / "assets" / "icons" / "toma-timer.png",
+            Path(__file__).resolve().parent / "assets" / "icons" / "toma-timer.png",
+        ]
+        for p in candidates:
+            if p.is_file():
+                try:
+                    self._icon_photo = tk.PhotoImage(file=str(p))
+                    self.iconphoto(True, self._icon_photo)
+                    return
+                except Exception:
+                    pass  # fall through silently
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -379,10 +413,10 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build(self) -> None:
         pad = {"padx": 16, "pady": 6}
-        ctk.CTkLabel(self, text="Settings", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(16, 8))
+        ctk.CTkLabel(self, text="Settings", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(16, 8))
 
         # --- Timer durations ---
-        section = ctk.CTkLabel(self, text="Timer (minutes)", font=ctk.CTkFont(size=13, weight="bold"))
+        section = ctk.CTkLabel(self, text="Timer (minutes)", font=ctk.CTkFont(size=14, weight="bold"))
         section.pack(anchor="w", padx=16)
 
         self.focus_var = ctk.IntVar(value=self.config["focus_minutes"])
@@ -396,7 +430,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._slider_row("Sessions per cycle", self.cycles_var, 1, 12, self.config["sessions_before_long_break"])
 
         # --- Behaviour ---
-        ctk.CTkLabel(self, text="Behaviour", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
+        ctk.CTkLabel(self, text="Behaviour", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
         self.auto_break_var = ctk.BooleanVar(value=self.config["auto_start_breaks"])
         self.auto_focus_var = ctk.BooleanVar(value=self.config["auto_start_focus"])
         self.sound_var = ctk.BooleanVar(value=self.config["sound_enabled"])

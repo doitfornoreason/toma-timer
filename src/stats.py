@@ -191,7 +191,7 @@ def build_figure(sessions: list[dict[str, Any]], theme: str = "dark") -> Figure:
     # --- Subplot 1: daily sessions (bars) ---
     ax1 = fig.add_subplot(2, 2, 1)
     ax1.bar(day_labels, counts, color=colors["bar"], width=0.8)
-    ax1.set_title("Focus Sessions — Last 30 Days", fontsize=11, pad=8)
+    ax1.set_title("Focus Sessions - Last 30 Days", fontsize=11, pad=8)
     ax1.set_ylabel("Sessions")
     ax1.tick_params(axis="x", labelsize=7, rotation=45)
 
@@ -199,7 +199,7 @@ def build_figure(sessions: list[dict[str, Any]], theme: str = "dark") -> Figure:
     ax2 = fig.add_subplot(2, 2, 2)
     ax2.plot(day_labels, minutes, color=colors["bar2"], marker="o", markersize=3, linewidth=1.5)
     ax2.fill_between(day_labels, minutes, alpha=0.2, color=colors["bar2"])
-    ax2.set_title("Focus Minutes — Last 30 Days", fontsize=11, pad=8)
+    ax2.set_title("Focus Minutes - Last 30 Days", fontsize=11, pad=8)
     ax2.set_ylabel("Minutes")
     ax2.tick_params(axis="x", labelsize=7, rotation=45)
 

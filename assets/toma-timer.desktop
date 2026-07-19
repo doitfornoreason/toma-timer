@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Toma Timer
+GenericName=Pomodoro Timer
+Comment=Lightweight pomodoro timer with session logging and stats
+Comment[es]=Temporizador pomodoro ligero con registro de sesiones y estadísticas
+Exec=/home/doitfornoreason/projects/toma-timer/.venv/bin/python /home/doitfornoreason/projects/toma-timer/src/main.py
+Icon=toma-timer
+Terminal=false
+Categories=Utility;Clock;
+Keywords=pomodoro;timer;productivity;focus;tomato;
+StartupNotify=true
+StartupWMClass=Tomatimer

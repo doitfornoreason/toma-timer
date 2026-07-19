@@ -145,6 +145,7 @@ class TimerEngine:
     # Internal phase control
     # ------------------------------------------------------------------ #
     def _begin_phase(self, state: State) -> None:
+        self._pause_event.set()  # a fresh phase is never paused
         self.state = state
         if state == State.FOCUS:
             minutes = self.focus_minutes
@@ -208,7 +209,7 @@ class TimerEngine:
             self.state = State.IDLE
             self.remaining = 0
             self.on_state_change(State.IDLE, "")
-            # but remember what's "next" so the GUI can prompt — keep simple: user clicks start
+            # but remember what's "next" so the GUI can prompt - keep simple: user clicks start
 
     def _hard_stop(self) -> None:
         self._stop_event.set()
@@ -220,9 +221,10 @@ class TimerEngine:
         self._current_session_id = None
 
     def _ensure_thread(self) -> None:
+        # Wake any blocked (paused) thread so it picks up the new phase.
+        self._pause_event.set()
         if self._thread is None or not self._thread.is_alive():
             self._stop_event.clear()
-            self._pause_event.set()
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
 
@@ -243,11 +245,16 @@ class TimerEngine:
             time.sleep(1.0)
             if self._stop_event.is_set():
                 break
-            # Re-check pause after sleep
+            # Re-check pause/idle after sleep (skip/reset may have fired)
             if self.state == State.PAUSED:
                 continue
+            if self.state == State.IDLE:
+                break
 
             with self._lock:
+                # State may have changed (skip/reset) while we waited for lock
+                if self.state in (State.IDLE, State.PAUSED):
+                    continue
                 self.remaining -= 1
                 self.on_tick(self.remaining, self.total)
                 if self.remaining <= 0:
