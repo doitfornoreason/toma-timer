@@ -4,7 +4,9 @@
 
 
 A lightweight, fast Pomodoro timer with a clean interface, session logging,
-data export, and productivity statistics — built with Python + CustomTkinter.
+data export, and productivity statistics — built with Python + CustomTkinter. 
+
+This project was made with the help of LLM agents.
 
 ## Features
 
